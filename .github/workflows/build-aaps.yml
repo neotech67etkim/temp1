@@ -1,0 +1,102 @@
+name: Build AndroidAPS APK
+
+on:
+  push:
+    paths:
+      - .github/workflows/build-aaps.yml
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'AndroidAPS tag or branch (nightscout/AndroidAPS)'
+        required: true
+        default: '3.4.2.6'
+      buildVariant:
+        description: 'Build variant'
+        required: true
+        default: 'fullRelease'
+        type: choice
+        options:
+          - fullRelease
+          - fullDebug
+          - aapsclientRelease
+          - aapsclient2Release
+          - pumpcontrolRelease
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      AAPS_REF: ${{ github.event.inputs.ref || '3.4.2.6' }}
+      BUILD_VARIANT: ${{ github.event.inputs.buildVariant || 'fullRelease' }}
+    steps:
+      - name: Checkout AndroidAPS
+        uses: actions/checkout@v5
+        with:
+          repository: nightscout/AndroidAPS
+          ref: ${{ env.AAPS_REF }}
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: gradle
+
+      # Uses your own keystore when the KEYSTORE_BASE64 / KEYSTORE_PASSWORD /
+      # KEY_ALIAS / KEY_PASSWORD secrets are set. Otherwise a throwaway key is
+      # generated for this run only (the keystore is NOT uploaded anywhere).
+      - name: Prepare signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          KS="$RUNNER_TEMP/keystore.jks"
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "Using keystore from repository secrets"
+            echo "$KEYSTORE_BASE64" | base64 -d > "$KS"
+          else
+            echo "::warning::No keystore secrets set - signing with a one-off key. Future builds cannot update this install."
+            KEYSTORE_PASSWORD=$(openssl rand -hex 16); KEY_PASSWORD=$KEYSTORE_PASSWORD; KEY_ALIAS=aaps
+            keytool -genkeypair -keystore "$KS" -storepass "$KEYSTORE_PASSWORD" -keypass "$KEY_PASSWORD" \
+              -alias "$KEY_ALIAS" -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=AAPS"
+          fi
+          echo "::add-mask::$KEYSTORE_PASSWORD"
+          echo "::add-mask::$KEY_PASSWORD"
+          {
+            echo "KS_FILE=$KS"
+            echo "KS_PASS=$KEYSTORE_PASSWORD"
+            echo "KS_ALIAS=$KEY_ALIAS"
+            echo "KS_KEY_PASS=$KEY_PASSWORD"
+          } >> "$GITHUB_ENV"
+
+      - name: Build APKs
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assemble${BUILD_VARIANT} :wear:assemble${BUILD_VARIANT} \
+            -Dorg.gradle.jvmargs="-Xmx8g -XX:+UseParallelGC -Xss1024m" \
+            -Dkotlin.daemon.jvm.options="-Xmx2g" \
+            -Dkotlin.compiler.execution.strategy="in-process" \
+            -Dorg.gradle.workers.max=4 \
+            -Pandroid.injected.signing.store.file="$KS_FILE" \
+            -Pandroid.injected.signing.store.password="$KS_PASS" \
+            -Pandroid.injected.signing.key.alias="$KS_ALIAS" \
+            -Pandroid.injected.signing.key.password="$KS_KEY_PASS"
+
+      - name: Collect APKs
+        run: |
+          mkdir -p out
+          FLAVOR=$(echo "$BUILD_VARIANT" | sed -E 's/(Release|Debug)$//')
+          TYPE=$(echo "$BUILD_VARIANT" | grep -oE '(Release|Debug)$' | tr '[:upper:]' '[:lower:]')
+          cp app/build/outputs/apk/$FLAVOR/$TYPE/*.apk  "out/aaps-${AAPS_REF}-${BUILD_VARIANT}.apk"
+          cp wear/build/outputs/apk/$FLAVOR/$TYPE/*.apk "out/aaps-wear-${AAPS_REF}-${BUILD_VARIANT}.apk"
+          ls -la out
+
+      - name: Upload APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: aaps-${{ env.AAPS_REF }}-${{ env.BUILD_VARIANT }}
+          path: out/*.apk
+          retention-days: 30
