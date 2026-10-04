@@ -22,6 +22,9 @@ on:
           - aapsclient2Release
           - pumpcontrolRelease
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -100,3 +103,13 @@ jobs:
           name: aaps-${{ env.AAPS_REF }}-${{ env.BUILD_VARIANT }}
           path: out/*.apk
           retention-days: 30
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: aaps-${{ env.AAPS_REF }}-${{ env.BUILD_VARIANT }}-run${{ github.run_number }}
+          name: AndroidAPS ${{ env.AAPS_REF }} (${{ env.BUILD_VARIANT }}) build ${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          body: |
+            Built from nightscout/AndroidAPS `${{ env.AAPS_REF }}`, variant `${{ env.BUILD_VARIANT }}`.
+          files: out/*.apk
