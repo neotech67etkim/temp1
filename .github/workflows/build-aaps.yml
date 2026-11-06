@@ -20,6 +20,7 @@ on:
           - fullDebug
           - aapsclientRelease
           - aapsclient2Release
+          - aapsclient3Release
           - pumpcontrolRelease
 
 permissions:
@@ -93,8 +94,19 @@ jobs:
           mkdir -p out
           FLAVOR=$(echo "$BUILD_VARIANT" | sed -E 's/(Release|Debug)$//')
           TYPE=$(echo "$BUILD_VARIANT" | grep -oE '(Release|Debug)$' | tr '[:upper:]' '[:lower:]')
-          cp app/build/outputs/apk/$FLAVOR/$TYPE/*.apk  "out/aaps-${AAPS_REF}-${BUILD_VARIANT}.apk"
-          cp wear/build/outputs/apk/$FLAVOR/$TYPE/*.apk "out/aaps-wear-${AAPS_REF}-${BUILD_VARIANT}.apk"
+          # Newer versions may produce several APKs per module (e.g. watch faces),
+          # so copy every one and keep the original name as a suffix when there are several.
+          collect() {
+            local dir=$1 prefix=$2
+            local apks=("$dir"/*.apk)
+            if [ ${#apks[@]} -eq 1 ]; then
+              cp "${apks[0]}" "out/${prefix}-${AAPS_REF}-${BUILD_VARIANT}.apk"
+            else
+              for a in "${apks[@]}"; do cp "$a" "out/${prefix}-${AAPS_REF}-${BUILD_VARIANT}-$(basename "$a" .apk).apk"; done
+            fi
+          }
+          collect app/build/outputs/apk/$FLAVOR/$TYPE aaps
+          collect wear/build/outputs/apk/$FLAVOR/$TYPE aaps-wear
           ls -la out
 
       - name: Upload APKs
